@@ -6,6 +6,7 @@ require "#{ENV['TM_SUPPORT_PATH']}/lib/escape.rb"
 require "#{ENV['TM_SUPPORT_PATH']}/lib/ui.rb"
 require "#{ENV['TM_BUNDLE_SUPPORT']}/lib/keychain.rb"
 require "#{ENV['TM_BUNDLE_SUPPORT']}/lib/metaweblog.rb"
+require "#{ENV['TM_BUNDLE_SUPPORT']}/lib/wordpress.rb"
 
 # FIXME: this will need work. DT
 $KCODE = 'u'
@@ -323,6 +324,7 @@ TEXT
   def post=(new_post)
     @post = new_post
     @post_id = self.post['postid'] if self.post['postid']
+    @post_id = self.post['page_id'] if self.post['page_id']
   end
 
   def post_id
@@ -372,7 +374,7 @@ TEXT
   def client
     current_endpoint = endpoint.dup
     current_endpoint.sub!(/#.+/, '') if current_endpoint =~ /#.+/
-    @client ||= MetaWeblogClient.new2(current_endpoint, ENV['TM_HTTP_PROXY'])
+    @client ||= WordPressClient.new2(current_endpoint, ENV['TM_HTTP_PROXY'])
     @client
   end
 
@@ -424,7 +426,7 @@ TEXT
     doc << "Slug: #{self.post['wp_slug']}\n" unless self.post['wp_slug'].to_s.empty?
     doc << "Keywords: #{self.post['mt_keywords']}\n" unless self.post['mt_keywords'].to_s.empty?
     doc << "Tags: #{self.post['mt_tags']}\n" if self.post['mt_tags'] && (self.post['mt_tags'] != '')
-    doc << "Status: #{self.post['post_status']}\n" if self.post['post_status']
+    doc << "Status: #{self.post['post_status'] || self.post['page_status']}\n" if self.post['post_status'] || self.post['page_status']
     if (self.mode == 'wp') && self.post['category']
       cats = self.post['category'].split(/,/)
       cats.each { | cat | doc << "Category: #{cat}\n" }
@@ -495,12 +497,12 @@ TEXT
     end
   end
 
-  def select_post(posts)
+  def select_post(posts, type = 'post')
     titles = posts.map { |p| p['title'] }
 
     result = TextMate::UI.request_item(
-      :title => "Fetch Post",
-      :prompt => "Select a recent post to edit:",
+      :title => "Fetch #{type.capitalize}",
+      :prompt => "Select a #{type} to edit:",
       :items => titles,
       :button1 => 'Load'
     )
@@ -567,23 +569,27 @@ TEXT
 
   # Command: Fetch
 
-  def fetch
+  def fetch(type = 'post')
     # Makes sure endpoint is determined and elements are parsed
     current_password = self.password
     require "#{ENV['TM_SUPPORT_PATH']}/lib/progress.rb"
     result = nil
-    TextMate.call_with_progress(:title => "Fetch Post", :message => "Contacting Server “#{@host}”…") do
+    TextMate.call_with_progress(:title => "Fetch #{type.capitalize}", :message => "Contacting Server “#{@host}”…") do
       begin
-        result = self.client.getRecentPosts(self.blog_id, self.username, current_password, 20)
+        result = if(type=='page')
+          self.client.getPages(self.blog_id, self.username, current_password, 100)
+        else
+          self.client.getRecentPosts(self.blog_id, self.username, current_password, 20)
+        end
       rescue XMLRPC::FaultException => e
         TextMate.exit_show_tool_tip("Error: #{e.faultString} (#{e.faultCode})")
       end
     end
     if !result || !result.length
-      TextMate.exit_show_tool_tip("No posts are available!")
+      TextMate.exit_show_tool_tip("No #{type.capitalize}s are available!")
     end
     @mw_success = true
-    if self.post = select_post(result)
+    if self.post = select_post(result, type)
       TextMate.exit_create_new_document(post_to_document())
     else
       TextMate.exit_discard
