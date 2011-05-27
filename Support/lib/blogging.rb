@@ -21,6 +21,8 @@ class Blogging
 
   # These elements can be assigned through public methods
   attr_writer :post_id, :post, :endpoint
+  
+  attr_accessor :kind
 
   private
 
@@ -253,6 +255,7 @@ TEXT
     @post['title'] = @headers['title'] if @headers['title']
     @post['wp_slug'] = @headers['slug'] if @headers['slug']
     self.post_id = @headers['post'] if @headers['post']
+    self.kind = @headers['type'].include?('Post') ? 'post' : 'page'
 
     format = @headers['format']
     self.post['mt_convert_breaks'] = format if format
@@ -374,7 +377,11 @@ TEXT
   def client
     current_endpoint = endpoint.dup
     current_endpoint.sub!(/#.+/, '') if current_endpoint =~ /#.+/
-    @client ||= WordPressClient.new2(current_endpoint, ENV['TM_HTTP_PROXY'])
+    @client ||= if @mode == 'wp'
+      WordPressClient.new2(current_endpoint, ENV['TM_HTTP_PROXY'])
+    else
+      MetaWeblogClient.new2(current_endpoint, ENV['TM_HTTP_PROXY'])
+    end
     @client
   end
 
@@ -418,7 +425,7 @@ TEXT
     end
 
     blog = self.endpoints[self.endpoint] || self.endpoint
-    doc << "Type: Blog Post (#{format})\n"
+    doc << "Type: Blog #{@kind.capitalize} (#{format})\n"
     doc << "Blog: #{blog}\n"
     doc << "Link: #{self.post['permaLink']}\n" if self.post['permaLink']
     doc << "Post: #{self.post_id}\n"
@@ -497,12 +504,12 @@ TEXT
     end
   end
 
-  def select_post(posts, type = 'post')
+  def select_post(posts)
     titles = posts.map { |p| p['title'] }
 
     result = TextMate::UI.request_item(
-      :title => "Fetch #{type.capitalize}",
-      :prompt => "Select a #{type} to edit:",
+      :title => "Fetch #{@kind.capitalize}",
+      :prompt => "Select a #{@kind} to edit:",
       :items => titles,
       :button1 => 'Load'
     )
@@ -554,9 +561,17 @@ TEXT
     TextMate.call_with_progress(:title => "Posting to Blog", :message => "Contacting Server “#{@host}”…") do
       begin
         if post_id
-          result = client.editPost(self.post_id, self.username, current_password, self.post, self.publish)
+          result = if(self.kind == 'page')
+            client.editPage(self.blog_id, self.post_id, self.username, current_password, self.post, self.publish)
+          else
+            client.editPost(self.post_id, self.username, current_password, self.post, self.publish)
+          end
         else
-          self.post_id = client.newPost(self.blog_id, self.username, current_password, self.post, self.publish)
+          self.post_id = if(self.kind == 'page')
+            client.newPage(self.blog_id, self.username, current_password, self.post, self.publish)
+          else
+            client.newPost(self.blog_id, self.username, current_password, self.post, self.publish)
+          end
         end
       rescue XMLRPC::FaultException => e
         TextMate.exit_show_tool_tip("Error: #{e.faultString} (#{e.faultCode})")
@@ -569,14 +584,15 @@ TEXT
 
   # Command: Fetch
 
-  def fetch(type = 'post')
+  def fetch(kind = 'post')
+    @kind = kind
     # Makes sure endpoint is determined and elements are parsed
     current_password = self.password
     require "#{ENV['TM_SUPPORT_PATH']}/lib/progress.rb"
     result = nil
-    TextMate.call_with_progress(:title => "Fetch #{type.capitalize}", :message => "Contacting Server “#{@host}”…") do
+    TextMate.call_with_progress(:title => "Fetch #{@kind.capitalize}", :message => "Contacting Server “#{@host}”…") do
       begin
-        result = if(type=='page')
+        result = if(@kind=='page')
           self.client.getPages(self.blog_id, self.username, current_password, 100)
         else
           self.client.getRecentPosts(self.blog_id, self.username, current_password, 20)
@@ -586,10 +602,10 @@ TEXT
       end
     end
     if !result || !result.length
-      TextMate.exit_show_tool_tip("No #{type.capitalize}s are available!")
+      TextMate.exit_show_tool_tip("No #{@kind.capitalize}s are available!")
     end
     @mw_success = true
-    if self.post = select_post(result, type)
+    if self.post = select_post(result)
       TextMate.exit_create_new_document(post_to_document())
     else
       TextMate.exit_discard
